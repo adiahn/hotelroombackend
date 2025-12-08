@@ -35,9 +35,9 @@ router.get('/', async (req, res, next) => {
     }
 
     const guests = await Guest.find(query)
-      .populate('agentId', 'name')
-      .populate('roomId', 'number capacity')
-      .sort({ checkInDate: -1 });
+      .populate('agentId', 'name _id')
+      .populate('roomId', 'number capacity _id')
+      .sort({ createdAt: -1 });
 
     res.json(guests);
   } catch (error) {
@@ -59,9 +59,26 @@ router.post('/', validate(guestValidation), async (req, res, next) => {
       return res.status(404).json({ error: 'Room not found' });
     }
 
-    if (!room.hasAvailableBeds()) {
-      return res.status(400).json({ error: 'Room is at full capacity' });
+    if (room.assignedAgentId && room.assignedAgentId.toString() !== agentId) {
+      return res.status(400).json({ error: 'Room is already assigned to another agent' });
     }
+
+    if (room.assignedAgentId && room.assignedAgentId.toString() === agentId) {
+      const existingGuest = await Guest.findOne({
+        userId: req.user._id,
+        agentId,
+        roomId,
+        checkedOut: false
+      });
+
+      if (existingGuest) {
+        return res.status(400).json({ error: 'Agent is already checked into this room' });
+      }
+    }
+
+    room.assignedAgentId = agentId;
+    room.occupiedBeds = room.capacity;
+    await room.save();
 
     const guest = await Guest.create({
       userId: req.user._id,
@@ -71,12 +88,9 @@ router.post('/', validate(guestValidation), async (req, res, next) => {
       expectedCheckOutDate: expectedCheckOutDate ? new Date(expectedCheckOutDate) : undefined
     });
 
-    room.occupiedBeds += 1;
-    await room.save();
-
     const populatedGuest = await Guest.findById(guest._id)
-      .populate('agentId', 'name')
-      .populate('roomId', 'number capacity');
+      .populate('agentId', 'name _id')
+      .populate('roomId', 'number capacity _id');
 
     res.status(201).json(populatedGuest);
   } catch (error) {
@@ -101,9 +115,9 @@ router.get('/search', async (req, res, next) => {
         { name: searchRegex }
       ]
     })
-      .populate('agentId', 'name')
-      .populate('roomId', 'number capacity')
-      .sort({ checkInDate: -1 });
+      .populate('agentId', 'name _id')
+      .populate('roomId', 'number capacity _id')
+      .sort({ createdAt: -1 });
 
     const filteredGuests = guests.filter(guest => {
       const nameMatch = searchRegex.test(guest.name);
@@ -124,8 +138,8 @@ router.get('/:id', validateObjectId(), async (req, res, next) => {
       _id: req.params.id,
       userId: req.user._id
     })
-      .populate('agentId', 'name')
-      .populate('roomId', 'number capacity');
+      .populate('agentId', 'name _id')
+      .populate('roomId', 'number capacity _id');
 
     if (!guest) {
       return res.status(404).json({ error: 'Guest not found' });
@@ -180,16 +194,20 @@ router.put('/:id', validateObjectId(), async (req, res, next) => {
 
       if (roomId !== guest.roomId.toString()) {
         const oldRoom = await Room.findById(guest.roomId);
-        if (oldRoom) {
-          oldRoom.occupiedBeds = Math.max(0, oldRoom.occupiedBeds - 1);
+        if (oldRoom && oldRoom.userId.toString() === req.user._id.toString()) {
+          oldRoom.assignedAgentId = null;
+          oldRoom.occupiedBeds = 0;
           await oldRoom.save();
         }
 
-        if (!newRoom.hasAvailableBeds()) {
-          return res.status(400).json({ error: 'New room is at full capacity' });
+        const currentAgentId = agentId || guest.agentId.toString();
+        
+        if (newRoom.assignedAgentId && newRoom.assignedAgentId.toString() !== currentAgentId) {
+          return res.status(400).json({ error: 'New room is already assigned to another agent' });
         }
 
-        newRoom.occupiedBeds += 1;
+        newRoom.assignedAgentId = currentAgentId;
+        newRoom.occupiedBeds = newRoom.capacity;
         await newRoom.save();
         guest.roomId = roomId;
       }
@@ -202,8 +220,8 @@ router.put('/:id', validateObjectId(), async (req, res, next) => {
     await guest.save();
 
     const populatedGuest = await Guest.findById(guest._id)
-      .populate('agentId', 'name')
-      .populate('roomId', 'number capacity');
+      .populate('agentId', 'name _id')
+      .populate('roomId', 'number capacity _id');
 
     res.json(populatedGuest);
   } catch (error) {
@@ -223,7 +241,7 @@ router.post('/:id/checkout', validateObjectId(), async (req, res, next) => {
     }
 
     if (guest.checkedOut) {
-      return res.status(400).json({ error: 'Guest is already checked out' });
+      return res.status(400).json({ error: 'Guest already checked out' });
     }
 
     guest.checkedOut = true;
@@ -231,14 +249,15 @@ router.post('/:id/checkout', validateObjectId(), async (req, res, next) => {
     await guest.save();
 
     const room = await Room.findById(guest.roomId);
-    if (room) {
-      room.occupiedBeds = Math.max(0, room.occupiedBeds - 1);
+    if (room && room.userId.toString() === req.user._id.toString()) {
+      room.assignedAgentId = null;
+      room.occupiedBeds = 0;
       await room.save();
     }
 
     const populatedGuest = await Guest.findById(guest._id)
-      .populate('agentId', 'name')
-      .populate('roomId', 'number capacity');
+      .populate('agentId', 'name _id')
+      .populate('roomId', 'number capacity _id');
 
     res.json(populatedGuest);
   } catch (error) {
