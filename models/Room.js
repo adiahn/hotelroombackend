@@ -20,6 +20,11 @@ const roomSchema = new mongoose.Schema({
     type: Number,
     default: 0,
     min: [0, 'Occupied beds cannot be negative']
+  },
+  assignedAgentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Agent',
+    default: null
   }
 }, {
   timestamps: true
@@ -27,6 +32,7 @@ const roomSchema = new mongoose.Schema({
 
 roomSchema.index({ userId: 1 });
 roomSchema.index({ userId: 1, number: 1 }, { unique: true });
+roomSchema.index({ assignedAgentId: 1 });
 
 roomSchema.methods.hasAvailableBeds = function() {
   return this.occupiedBeds < this.capacity;

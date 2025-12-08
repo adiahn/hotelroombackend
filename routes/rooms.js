@@ -3,7 +3,7 @@ import Room from '../models/Room.js';
 import Guest from '../models/Guest.js';
 import { authenticate } from '../middleware/auth.js';
 import { authorize } from '../middleware/auth.js';
-import { validate, validateObjectId, roomValidation } from '../middleware/validation.js';
+import { validate, validateObjectId, roomValidation, roomUpdateValidation } from '../middleware/validation.js';
 
 const router = express.Router();
 
@@ -11,7 +11,9 @@ router.use(authenticate);
 
 router.get('/', async (req, res, next) => {
   try {
-    const rooms = await Room.find({ userId: req.user._id }).sort({ createdAt: -1 });
+    const rooms = await Room.find({ userId: req.user._id })
+      .populate('assignedAgentId', 'name')
+      .sort({ createdAt: -1 });
     res.json(rooms);
   } catch (error) {
     next(error);
@@ -33,7 +35,10 @@ router.post('/', validate(roomValidation), async (req, res, next) => {
       capacity
     });
 
-    res.status(201).json(room);
+    const populatedRoom = await Room.findById(room._id)
+      .populate('assignedAgentId', 'name');
+
+    res.status(201).json(populatedRoom);
   } catch (error) {
     next(error);
   }
@@ -41,15 +46,17 @@ router.post('/', validate(roomValidation), async (req, res, next) => {
 
 router.get('/:id', validateObjectId(), authorize(Room), async (req, res, next) => {
   try {
-    res.json(req.resource);
+    const room = await Room.findById(req.resource._id)
+      .populate('assignedAgentId', 'name');
+    res.json(room);
   } catch (error) {
     next(error);
   }
 });
 
-router.put('/:id', validateObjectId(), authorize(Room), validate(roomValidation), async (req, res, next) => {
+router.put('/:id', validateObjectId(), authorize(Room), validate(roomUpdateValidation), async (req, res, next) => {
   try {
-    const { number, capacity } = req.body;
+    const { number, capacity, assignedAgentId } = req.body;
 
     if (number && number !== req.resource.number) {
       const existingRoom = await Room.findOne({ userId: req.user._id, number });
@@ -58,10 +65,35 @@ router.put('/:id', validateObjectId(), authorize(Room), validate(roomValidation)
       }
     }
 
-    Object.assign(req.resource, { number, capacity });
+    if (assignedAgentId !== undefined) {
+      if (assignedAgentId === null) {
+        req.resource.assignedAgentId = null;
+        req.resource.occupiedBeds = 0;
+      } else {
+        const Agent = (await import('../models/Agent.js')).default;
+        const agent = await Agent.findOne({ _id: assignedAgentId, userId: req.user._id });
+        if (!agent) {
+          return res.status(404).json({ error: 'Agent not found' });
+        }
+        req.resource.assignedAgentId = assignedAgentId;
+        req.resource.occupiedBeds = req.resource.capacity;
+      }
+    }
+
+    if (number) req.resource.number = number;
+    if (capacity !== undefined) {
+      req.resource.capacity = capacity;
+      if (req.resource.assignedAgentId) {
+        req.resource.occupiedBeds = capacity;
+      }
+    }
+
     await req.resource.save();
 
-    res.json(req.resource);
+    const populatedRoom = await Room.findById(req.resource._id)
+      .populate('assignedAgentId', 'name');
+
+    res.json(populatedRoom);
   } catch (error) {
     next(error);
   }

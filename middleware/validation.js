@@ -61,6 +61,26 @@ export const roomValidation = [
     .withMessage('Capacity must be a number and at least 1')
 ];
 
+export const roomUpdateValidation = [
+  body('number')
+    .optional()
+    .notEmpty()
+    .withMessage('Room number cannot be empty')
+    .trim(),
+  body('capacity')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Capacity must be a number and at least 1'),
+  body('assignedAgentId')
+    .optional()
+    .custom((value) => {
+      if (value !== null && !mongoose.Types.ObjectId.isValid(value)) {
+        throw new Error('Invalid agent ID format');
+      }
+      return true;
+    })
+];
+
 export const agentValidation = [
   body('name')
     .notEmpty()
