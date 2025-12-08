@@ -14,7 +14,16 @@ router.get('/', async (req, res, next) => {
     const rooms = await Room.find({ userId: req.user._id })
       .populate('assignedAgentId', 'name')
       .sort({ createdAt: -1 });
-    res.json(rooms);
+    
+    const roomsWithAssignedAgent = rooms.map(room => {
+      const roomObj = room.toObject();
+      return {
+        ...roomObj,
+        assignedAgentId: roomObj.assignedAgentId || null
+      };
+    });
+    
+    res.json(roomsWithAssignedAgent);
   } catch (error) {
     next(error);
   }
@@ -38,7 +47,13 @@ router.post('/', validate(roomValidation), async (req, res, next) => {
     const populatedRoom = await Room.findById(room._id)
       .populate('assignedAgentId', 'name');
 
-    res.status(201).json(populatedRoom);
+    const roomObj = populatedRoom.toObject();
+    const roomWithAssignedAgent = {
+      ...roomObj,
+      assignedAgentId: roomObj.assignedAgentId || null
+    };
+
+    res.status(201).json(roomWithAssignedAgent);
   } catch (error) {
     next(error);
   }
@@ -48,7 +63,14 @@ router.get('/:id', validateObjectId(), authorize(Room), async (req, res, next) =
   try {
     const room = await Room.findById(req.resource._id)
       .populate('assignedAgentId', 'name');
-    res.json(room);
+    
+    const roomObj = room.toObject();
+    const roomWithAssignedAgent = {
+      ...roomObj,
+      assignedAgentId: roomObj.assignedAgentId || null
+    };
+    
+    res.json(roomWithAssignedAgent);
   } catch (error) {
     next(error);
   }
@@ -93,7 +115,13 @@ router.put('/:id', validateObjectId(), authorize(Room), validate(roomUpdateValid
     const populatedRoom = await Room.findById(req.resource._id)
       .populate('assignedAgentId', 'name');
 
-    res.json(populatedRoom);
+    const roomObj = populatedRoom.toObject();
+    const roomWithAssignedAgent = {
+      ...roomObj,
+      assignedAgentId: roomObj.assignedAgentId || null
+    };
+
+    res.json(roomWithAssignedAgent);
   } catch (error) {
     next(error);
   }
