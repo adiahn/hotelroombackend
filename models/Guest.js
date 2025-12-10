@@ -14,7 +14,7 @@ const guestSchema = new mongoose.Schema({
   agentId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Agent',
-    required: [true, 'Agent ID is required']
+    default: null
   },
   roomId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -23,8 +23,7 @@ const guestSchema = new mongoose.Schema({
   },
   checkInDate: {
     type: Date,
-    required: true,
-    default: Date.now
+    required: true
   },
   expectedCheckOutDate: {
     type: Date

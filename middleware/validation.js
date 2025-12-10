@@ -98,10 +98,9 @@ export const guestValidation = [
     .isLength({ min: 1 })
     .withMessage('Guest name cannot be empty'),
   body('agentId')
-    .notEmpty()
-    .withMessage('Agent ID is required')
+    .optional()
     .custom((value) => {
-      if (!mongoose.Types.ObjectId.isValid(value)) {
+      if (value !== null && value !== undefined && !mongoose.Types.ObjectId.isValid(value)) {
         throw new Error('Invalid agent ID format');
       }
       return true;
@@ -115,9 +114,23 @@ export const guestValidation = [
       }
       return true;
     }),
+  body('checkInDate')
+    .optional()
+    .isISO8601()
+    .withMessage('Check-in date must be a valid date'),
   body('expectedCheckOutDate')
     .optional()
     .isISO8601()
     .withMessage('Expected check-out date must be a valid date')
+    .custom((value, { req }) => {
+      if (value && req.body.checkInDate) {
+        const checkIn = new Date(req.body.checkInDate);
+        const checkOut = new Date(value);
+        if (checkOut <= checkIn) {
+          throw new Error('Expected check-out date must be after check-in date');
+        }
+      }
+      return true;
+    })
 ];
 

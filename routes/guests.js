@@ -9,6 +9,15 @@ import { validate, validateObjectId, guestValidation } from '../middleware/valid
 
 const router = express.Router();
 
+const calculateRoomOccupancy = async (roomId, userId) => {
+  const activeGuests = await Guest.countDocuments({
+    roomId,
+    userId,
+    checkedOut: false
+  });
+  return activeGuests;
+};
+
 router.use(authenticate);
 
 router.get('/', async (req, res, next) => {
@@ -27,11 +36,15 @@ router.get('/', async (req, res, next) => {
       query.roomId = roomId;
     }
 
-    if (agentId) {
-      if (!mongoose.Types.ObjectId.isValid(agentId)) {
-        return res.status(400).json({ error: 'Invalid agent ID format' });
+    if (agentId !== undefined && agentId !== '') {
+      if (agentId === 'null') {
+        query.agentId = null;
+      } else {
+        if (!mongoose.Types.ObjectId.isValid(agentId)) {
+          return res.status(400).json({ error: 'Invalid agent ID format' });
+        }
+        query.agentId = agentId;
       }
-      query.agentId = agentId;
     }
 
     const guests = await Guest.find(query)
@@ -47,23 +60,23 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', validate(guestValidation), async (req, res, next) => {
   try {
-    const { name, agentId, roomId, expectedCheckOutDate } = req.body;
-
-    const agent = await Agent.findOne({ _id: agentId, userId: req.user._id });
-    if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
-    }
+    const { name, agentId, roomId, checkInDate, expectedCheckOutDate } = req.body;
 
     const room = await Room.findOne({ _id: roomId, userId: req.user._id });
     if (!room) {
       return res.status(404).json({ error: 'Room not found' });
     }
 
-    if (room.assignedAgentId && room.assignedAgentId.toString() !== agentId) {
-      return res.status(400).json({ error: 'Room is already assigned to another agent' });
-    }
+    if (agentId) {
+      const agent = await Agent.findOne({ _id: agentId, userId: req.user._id });
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
 
-    if (room.assignedAgentId && room.assignedAgentId.toString() === agentId) {
+      if (room.assignedAgentId && room.assignedAgentId.toString() !== agentId) {
+        return res.status(400).json({ error: 'Room is already assigned to another agent' });
+      }
+
       const existingGuest = await Guest.findOne({
         userId: req.user._id,
         agentId,
@@ -74,17 +87,31 @@ router.post('/', validate(guestValidation), async (req, res, next) => {
       if (existingGuest) {
         return res.status(400).json({ error: 'Agent is already checked into this room' });
       }
-    }
 
-    room.assignedAgentId = agentId;
-    room.occupiedBeds = room.capacity;
-    await room.save();
+      room.assignedAgentId = agentId;
+      room.occupiedBeds = room.capacity;
+      await room.save();
+    } else {
+      const currentOccupancy = await calculateRoomOccupancy(roomId, req.user._id);
+      
+      if (room.assignedAgentId) {
+        return res.status(400).json({ error: 'Room is assigned to an agent. Cannot add direct booking' });
+      }
+
+      if (currentOccupancy >= room.capacity) {
+        return res.status(400).json({ error: 'Room is at full capacity' });
+      }
+
+      room.occupiedBeds = currentOccupancy + 1;
+      await room.save();
+    }
 
     const guest = await Guest.create({
       userId: req.user._id,
       name: name.trim(),
-      agentId,
+      agentId: agentId || null,
       roomId,
+      checkInDate: checkInDate ? new Date(checkInDate) : new Date(),
       expectedCheckOutDate: expectedCheckOutDate ? new Date(expectedCheckOutDate) : undefined
     });
 
@@ -166,55 +193,119 @@ router.put('/:id', validateObjectId(), async (req, res, next) => {
       return res.status(400).json({ error: 'Cannot update checked-out guest' });
     }
 
-    const { name, agentId, roomId, expectedCheckOutDate } = req.body;
+    const { name, agentId, roomId, checkInDate, expectedCheckOutDate } = req.body;
 
     if (name) {
       guest.name = name.trim();
     }
 
-    if (agentId) {
-      if (!mongoose.Types.ObjectId.isValid(agentId)) {
-        return res.status(400).json({ error: 'Invalid agent ID format' });
+    if (checkInDate !== undefined) {
+      const newCheckInDate = checkInDate ? new Date(checkInDate) : new Date();
+      if (guest.expectedCheckOutDate && newCheckInDate >= guest.expectedCheckOutDate) {
+        return res.status(400).json({ error: 'Check-in date must be before expected check-out date' });
       }
-      const agent = await Agent.findOne({ _id: agentId, userId: req.user._id });
-      if (!agent) {
-        return res.status(404).json({ error: 'Agent not found' });
-      }
-      guest.agentId = agentId;
+      guest.checkInDate = newCheckInDate;
     }
 
-    if (roomId) {
+    const oldRoom = await Room.findById(guest.roomId);
+    const isRoomChange = roomId && roomId !== guest.roomId.toString();
+    const newRoom = isRoomChange ? await Room.findOne({ _id: roomId, userId: req.user._id }) : oldRoom;
+
+    if (isRoomChange) {
       if (!mongoose.Types.ObjectId.isValid(roomId)) {
         return res.status(400).json({ error: 'Invalid room ID format' });
       }
-      const newRoom = await Room.findOne({ _id: roomId, userId: req.user._id });
       if (!newRoom) {
         return res.status(404).json({ error: 'Room not found' });
       }
+    }
 
-      if (roomId !== guest.roomId.toString()) {
-        const oldRoom = await Room.findById(guest.roomId);
-        if (oldRoom && oldRoom.userId.toString() === req.user._id.toString()) {
-          oldRoom.assignedAgentId = null;
-          oldRoom.occupiedBeds = 0;
-          await oldRoom.save();
+    let newAgentId = guest.agentId;
+    const isAgentChange = agentId !== undefined;
+
+    if (agentId !== undefined) {
+      if (agentId === null || agentId === '' || agentId === 'null') {
+        newAgentId = null;
+        guest.agentId = null;
+      } else {
+        if (!mongoose.Types.ObjectId.isValid(agentId)) {
+          return res.status(400).json({ error: 'Invalid agent ID format' });
         }
-
-        const currentAgentId = agentId || guest.agentId.toString();
-        
-        if (newRoom.assignedAgentId && newRoom.assignedAgentId.toString() !== currentAgentId) {
-          return res.status(400).json({ error: 'New room is already assigned to another agent' });
+        const agent = await Agent.findOne({ _id: agentId, userId: req.user._id });
+        if (!agent) {
+          return res.status(404).json({ error: 'Agent not found' });
         }
+        newAgentId = agentId;
+        guest.agentId = agentId;
+      }
+    }
 
-        newRoom.assignedAgentId = currentAgentId;
-        newRoom.occupiedBeds = newRoom.capacity;
+    const actualAgentChange = isAgentChange && (newAgentId?.toString() !== guest.agentId?.toString());
+
+    if (isRoomChange || actualAgentChange) {
+      if (oldRoom && oldRoom.userId.toString() === req.user._id.toString()) {
+        if (guest.agentId) {
+          const otherAgentGuests = await Guest.countDocuments({
+            roomId: oldRoom._id,
+            userId: req.user._id,
+            agentId: guest.agentId,
+            checkedOut: false,
+            _id: { $ne: guest._id }
+          });
+          if (otherAgentGuests === 0) {
+            oldRoom.assignedAgentId = null;
+            oldRoom.occupiedBeds = 0;
+          } else {
+            oldRoom.occupiedBeds = oldRoom.capacity;
+          }
+        } else {
+          const currentOccupancy = await calculateRoomOccupancy(oldRoom._id, req.user._id);
+          oldRoom.occupiedBeds = currentOccupancy;
+        }
+        await oldRoom.save();
+      }
+
+      if (isRoomChange) {
+        if (newAgentId) {
+          if (newRoom.assignedAgentId && newRoom.assignedAgentId.toString() !== newAgentId.toString()) {
+            return res.status(400).json({ error: 'New room is already assigned to another agent' });
+          }
+          newRoom.assignedAgentId = newAgentId;
+          newRoom.occupiedBeds = newRoom.capacity;
+        } else {
+          if (newRoom.assignedAgentId) {
+            return res.status(400).json({ error: 'Room is assigned to an agent. Cannot add direct booking' });
+          }
+          const currentOccupancy = await calculateRoomOccupancy(newRoom._id, req.user._id);
+          if (currentOccupancy >= newRoom.capacity) {
+            return res.status(400).json({ error: 'Room is at full capacity' });
+          }
+          newRoom.occupiedBeds = currentOccupancy + 1;
+        }
         await newRoom.save();
         guest.roomId = roomId;
+      } else if (isAgentChange && !isRoomChange) {
+        if (newAgentId) {
+          if (oldRoom.assignedAgentId && oldRoom.assignedAgentId.toString() !== newAgentId.toString()) {
+            return res.status(400).json({ error: 'Room is already assigned to another agent' });
+          }
+          oldRoom.assignedAgentId = newAgentId;
+          oldRoom.occupiedBeds = oldRoom.capacity;
+        } else {
+          oldRoom.assignedAgentId = null;
+          const currentOccupancy = await calculateRoomOccupancy(oldRoom._id, req.user._id);
+          oldRoom.occupiedBeds = currentOccupancy;
+        }
+        await oldRoom.save();
       }
     }
 
     if (expectedCheckOutDate !== undefined) {
-      guest.expectedCheckOutDate = expectedCheckOutDate ? new Date(expectedCheckOutDate) : null;
+      const newCheckOutDate = expectedCheckOutDate ? new Date(expectedCheckOutDate) : null;
+      if (newCheckOutDate && guest.checkInDate && newCheckOutDate <= guest.checkInDate) {
+        return res.status(400).json({ error: 'Expected check-out date must be after check-in date' });
+      }
+      guest.expectedCheckOutDate = newCheckOutDate;
     }
 
     await guest.save();
@@ -250,8 +341,13 @@ router.post('/:id/checkout', validateObjectId(), async (req, res, next) => {
 
     const room = await Room.findById(guest.roomId);
     if (room && room.userId.toString() === req.user._id.toString()) {
-      room.assignedAgentId = null;
-      room.occupiedBeds = 0;
+      if (guest.agentId) {
+        room.assignedAgentId = null;
+        room.occupiedBeds = 0;
+      } else {
+        const currentOccupancy = await calculateRoomOccupancy(guest.roomId, req.user._id);
+        room.occupiedBeds = currentOccupancy;
+      }
       await room.save();
     }
 
